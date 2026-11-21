@@ -18,6 +18,13 @@ def rust_input_parameter_widths(model: pybamm.BaseModel) -> dict[str, int]:
     return {ip.name: ip._expected_size or 1 for ip in model.input_parameters}
 
 
+# CasADi's error for a conversion without y_dot, raised alike on the Rust backend
+_Y_DOT_REQUIRED = (
+    "Must provide a 'y_dot' for converting state vectors differentiated "
+    "in time, e.g. by `symbol.diff(pybamm.t)`"
+)
+
+
 def reject_y_dot(function: CompiledFunction) -> None:
     """Refuse a compiled function that reads the state derivatives, ``y_dot``.
 
@@ -27,10 +34,16 @@ def reject_y_dot(function: CompiledFunction) -> None:
         If ``function`` reads ``y_dot``, as the CasADi conversion does without it.
     """
     if function.uses_y_dot:
-        raise ValueError(
-            "Must provide a 'y_dot' for converting state vectors differentiated "
-            "in time, e.g. by `symbol.diff(pybamm.t)`"
-        )
+        raise ValueError(_Y_DOT_REQUIRED)
+
+
+def _reject_y_dot_symbol(symbol: pybamm.Symbol) -> None:
+    """Refuse a solver output reading ``y_dot`` with CasADi's error.
+
+    The compiled model would refuse it too, but with a message of its own.
+    """
+    if symbol.has_symbol_of_classes(pybamm.StateVectorDot):
+        raise ValueError(_Y_DOT_REQUIRED)
 
 
 def rust_graph_with_inputs(model: pybamm.BaseModel, input_names):
@@ -98,6 +111,13 @@ class RustModelLowering:
         """Lower the requested output variables; lengths are flattened component counts.
 
         A name in ``time_integral_vars`` lowers its ``sum_node``, summed post-solve.
+
+        Raises
+        ------
+        pybamm.SolverError
+            If an output variable is a tensor field.
+        ValueError
+            If an output variable reads the state derivatives, ``y_dot``.
         """
         time_integral_vars = time_integral_vars or {}
         for name in output_variables:
@@ -112,6 +132,7 @@ class RustModelLowering:
                     "read back from a Solution. Request a scalar component with "
                     "pybamm.Component instead."
                 )
+            _reject_y_dot_symbol(symbol)
             self._output_exprs.append(self.lower(symbol))
             shape = getattr(symbol, "shape", ())
             self._output_lens.append(int(np.prod(shape)) if shape else 1)
@@ -124,12 +145,15 @@ class RustModelLowering:
         ------
         pybamm.SolverError
             If ``symbol`` is not scalar.
+        ValueError
+            If ``symbol`` reads the state derivatives, ``y_dot``.
         """
         # A shape-only walk, as for the termination events
         if np.prod(np.shape(symbol.evaluate_for_shape())) != 1:
             raise pybamm.SolverError(
                 f"upsampling_tolerance needs a scalar variable, got '{name}'"
             )
+        _reject_y_dot_symbol(symbol)
         self._upsampling_expr = self.lower(symbol)
         return self._upsampling_expr
 
