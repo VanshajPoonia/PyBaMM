@@ -2507,8 +2507,8 @@ def process(
         returns Jacobian function wrt the stacked sensitivity parameters instead
         of jacp
     use_state_derivatives: bool, optional
-        whether the CasADi functions take the state derivatives, `y_dot`, as a
-        fourth input. Default is False
+        whether the CasADi or Rust functions take the state derivatives, `y_dot`,
+        as a fourth input. Default is False
 
     Returns
     -------
@@ -2571,7 +2571,7 @@ def process(
 
     elif model.convert_to_format == "rust":
         from pybamm.solvers.rust_evaluator import RustEvaluator
-        from pybamm.solvers.rust_lowering import rust_graph_with_inputs
+        from pybamm.solvers.rust_lowering import reject_y_dot, rust_graph_with_inputs
 
         if return_jacp_stacked:
             raise pybamm.SolverError(
@@ -2587,6 +2587,8 @@ def process(
 
         # Full system width, so rectangular sub-groups differentiate wrt all states
         cf = graph.compile(rust_expr, name=name, n_states=model.len_rhs_and_alg)
+        if not use_state_derivatives:
+            reject_y_dot(cf)
         func = RustEvaluator(cf, "func")
 
         if model.calculate_sensitivities:
